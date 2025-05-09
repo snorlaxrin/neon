@@ -1277,6 +1277,8 @@ impl Timeline {
             return Ok(CompactionOutcome::YieldForL0);
         }
 
+        let gc_cutoff = *self.applied_gc_cutoff_lsn.read();
+
         // 2. Repartition and create image layers if necessary
         match self
             .repartition(
@@ -1287,7 +1289,7 @@ impl Timeline {
             )
             .await
         {
-            Ok(((dense_partitioning, sparse_partitioning), lsn)) => {
+            Ok(((dense_partitioning, sparse_partitioning), lsn)) if lsn >= gc_cutoff => {
                 // Disables access_stats updates, so that the files we read remain candidates for eviction after we're done with them
                 let image_ctx = RequestContextBuilder::from(ctx)
                     .access_stats_behavior(AccessStatsBehavior::Skip)
@@ -1339,6 +1341,10 @@ impl Timeline {
                     );
                     return Ok(CompactionOutcome::YieldForL0);
                 }
+            }
+
+            Ok(_) => {
+                info!("skipping repartitioning due to image compaction LSN being below GC cutoff");
             }
 
             // Suppress errors when cancelled.
@@ -2204,8 +2210,7 @@ impl Timeline {
                     .as_mut()
                     .unwrap()
                     .put_value(key, lsn, value, ctx)
-                    .await
-                    .map_err(CompactionError::Other)?;
+                    .await?;
             } else {
                 let owner = self.shard_identity.get_shard_number(&key);
 
@@ -3607,6 +3612,13 @@ impl Timeline {
                     last_key = Some(key);
                 }
                 accumulated_values.push((key, lsn, val));
+
+                if accumulated_values.len() >= 65536 {
+                    // Assume all of them are images, that would be 512MB of data in memory for a single key.
+                    return Err(CompactionError::Other(anyhow!(
+                        "too many values for a single key, giving up gc-compaction"
+                    )));
+                }
             } else {
                 let last_key: &mut Key = last_key.as_mut().unwrap();
                 stat.on_unique_key_visited(); // TODO: adjust statistics for partial compaction
