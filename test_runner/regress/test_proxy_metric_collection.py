@@ -8,6 +8,7 @@ from fixtures.neon_fixtures import (
     PSQL,
     NeonProxy,
     VanillaPostgres,
+    temp_env,
 )
 from werkzeug.wrappers.response import Response
 
@@ -59,19 +60,26 @@ def proxy_with_metric_collector(
     metric_collection_endpoint = f"http://{host}:{port}/billing/api/v1/usage_events"
     metric_collection_interval = "5s"
 
-    with NeonProxy(
-        neon_binpath=neon_binpath,
-        test_output_dir=test_output_dir,
-        proxy_port=proxy_port,
-        http_port=http_port,
-        mgmt_port=mgmt_port,
-        router_port=router_port,
-        router_tls_port=router_tls_port,
-        external_http_port=external_http_port,
-        metric_collection_endpoint=metric_collection_endpoint,
-        metric_collection_interval=metric_collection_interval,
-        auth_backend=NeonProxy.Link(),
-    ) as proxy:
+    compute_cert_path = test_output_dir / "server.crt"
+
+    ca_ctx = temp_env("NEON_INTERNAL_CA_FILE", str(compute_cert_path))
+
+    with (
+        ca_ctx,
+        NeonProxy(
+            neon_binpath=neon_binpath,
+            test_output_dir=test_output_dir,
+            proxy_port=proxy_port,
+            http_port=http_port,
+            mgmt_port=mgmt_port,
+            router_port=router_port,
+            router_tls_port=router_tls_port,
+            external_http_port=external_http_port,
+            metric_collection_endpoint=metric_collection_endpoint,
+            metric_collection_interval=metric_collection_interval,
+            auth_backend=NeonProxy.Link(),
+        ) as proxy,
+    ):
         proxy.start()
         yield proxy
 
@@ -79,8 +87,8 @@ def proxy_with_metric_collector(
 @pytest.mark.asyncio
 async def test_proxy_metric_collection(
     httpserver: HTTPServer,
+    vanilla_pg: VanillaPostgres,  # we should create compute certificates first
     proxy_with_metric_collector: NeonProxy,
-    vanilla_pg: VanillaPostgres,
 ):
     # mock http server that returns OK for the metrics
     httpserver.expect_request("/billing/api/v1/usage_events", method="POST").respond_with_handler(
