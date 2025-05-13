@@ -337,10 +337,12 @@ async fn run_dump_restore(
     pg_lib_dir: Utf8PathBuf,
     source_connstring: String,
     destination_connstring: String,
+    schemas: Vec<String>,
+    extensions: Vec<String>,
 ) -> Result<(), anyhow::Error> {
     let dumpdir = workdir.join("dumpdir");
 
-    let common_args = [
+    let mut common_args = vec![
         // schema mapping (prob suffices to specify them on one side)
         "--no-owner".to_string(),
         "--no-privileges".to_string(),
@@ -349,6 +351,10 @@ async fn run_dump_restore(
         "--no-subscriptions".to_string(),
         "--no-tablespaces".to_string(),
         "--no-event-triggers".to_string(),
+        "--enable-row-security".to_string(),
+        // always include public schema by default
+        "--schema".to_string(),
+        "public".to_string(),
         // format
         "--format".to_string(),
         "directory".to_string(),
@@ -359,10 +365,28 @@ async fn run_dump_restore(
         "--verbose".to_string(),
     ];
 
+    for schema in &schemas {
+        common_args.push("--schema".to_string());
+        common_args.push(schema.clone());
+    }
+
+    let mut pg_dump_args = vec![
+        // this makes sure any unsupported extensions are not included in the dump
+        // even if we don't specify supported extensions explicitly
+        "--extension".to_string(),
+        "plpgsql".to_string(),
+    ];
+
+    for extension in &extensions {
+        pg_dump_args.push("--extension".to_string());
+        pg_dump_args.push(extension.clone());
+    }
+
     info!("dump into the working directory");
     {
         let mut pg_dump = tokio::process::Command::new(pg_bin_dir.join("pg_dump"))
             .args(&common_args)
+            .args(&pg_dump_args)
             .arg("-f")
             .arg(&dumpdir)
             .arg("--no-sync")
@@ -502,6 +526,8 @@ async fn cmd_pgdata(
         pg_lib_dir,
         source_connection_string,
         destination_connstring,
+        vec![],
+        vec![],
     )
     .await?;
 
@@ -596,6 +622,8 @@ async fn cmd_dumprestore(
         pg_lib_dir,
         source_connstring,
         destination_connstring,
+        vec![],
+        vec![],
     )
     .await
 }
